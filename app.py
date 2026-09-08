@@ -32,6 +32,10 @@ def inicializar_bd():
         try: cursor.execute(f"ALTER TABLE conversaciones ADD COLUMN {col} {tipo}")
         except: pass
 
+    # Actualización para la tabla de actividades semanales (Agregar "registrado_por")
+    try: cursor.execute("ALTER TABLE actividades_semanales ADD COLUMN registrado_por TEXT")
+    except: pass
+
     conn.commit()
     conn.close()
 
@@ -191,10 +195,12 @@ elif menu == "📊 Resumen Mensual":
     st.dataframe(pd.read_sql_query(query_est, conn), use_container_width=True, hide_index=True)
 
     st.markdown("### ⛪ Llevados a la Iglesia este mes")
-    c.execute("SELECT semana_str, nombres_iglesia FROM actividades_semanales WHERE mes_pertenencia = ? AND nombres_iglesia != ''", (mes_sel,))
+    c.execute("SELECT semana_str, nombres_iglesia, registrado_por FROM actividades_semanales WHERE mes_pertenencia = ? AND nombres_iglesia != ''", (mes_sel,))
     iglesia_data = c.fetchall()
     if iglesia_data:
-        for sem, nombres in iglesia_data: st.info(f"**Semana {sem.split('W')[1]}:** {nombres}")
+        for sem, nombres, reg_por in iglesia_data: 
+            autor = reg_por if reg_por else "Alguien"
+            st.info(f"**Semana {sem.split('W')[1]} (por {autor}):** {nombres}")
     else: st.write("No hay registros este mes.")
     conn.close()
 
@@ -259,18 +265,24 @@ elif menu == "👥 Reporte Semanal":
     
     conn = sqlite3.connect('ministerio.db')
     c = conn.cursor()
-    c.execute("SELECT grupos_realizados, nombres_iglesia, grupos_iniciados FROM actividades_semanales WHERE semana_str = ?", (semana_actual,))
+    c.execute("SELECT grupos_realizados, nombres_iglesia, grupos_iniciados, registrado_por FROM actividades_semanales WHERE semana_str = ?", (semana_actual,))
     datos_sem = c.fetchone()
     
     with st.form("form_semanal", clear_on_submit=False):
+        usuario_reporte = st.text_input("👤 Tu Nombre (Quien registra)*", value=datos_sem[3] if datos_sem and datos_sem[3] else "")
         r = st.number_input("¿Cuántos grupitos de fe tuviste en esta semana?", min_value=0, value=datos_sem[0] if datos_sem else 0)
         i = st.number_input("¿Cuántos grupitos se arrancaron la semana pasada?", min_value=0, value=datos_sem[2] if datos_sem else 0)
         n = st.text_area("¿A quién llevaste a la iglesia esta semana?", value=datos_sem[1] if datos_sem else "")
         
         if st.form_submit_button("Guardar Reporte Semanal", type="primary"):
-            if datos_sem: c.execute("UPDATE actividades_semanales SET grupos_realizados=?, grupos_iniciados=?, nombres_iglesia=? WHERE semana_str=?", (r, i, n, semana_actual))
-            else: c.execute("INSERT INTO actividades_semanales (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia) VALUES (?, ?, ?, ?, ?)", (semana_actual, mes_actual, r, i, n))
-            conn.commit(); st.success("Guardado correctamente.")
+            if not usuario_reporte.strip():
+                st.error("Por favor, ingresa tu nombre.")
+            else:
+                if datos_sem: 
+                    c.execute("UPDATE actividades_semanales SET grupos_realizados=?, grupos_iniciados=?, nombres_iglesia=?, registrado_por=? WHERE semana_str=?", (r, i, n, usuario_reporte.strip(), semana_actual))
+                else: 
+                    c.execute("INSERT INTO actividades_semanales (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) VALUES (?, ?, ?, ?, ?, ?)", (semana_actual, mes_actual, r, i, n, usuario_reporte.strip()))
+                conn.commit(); st.success("Guardado correctamente.")
     conn.close()
 
 # =====================================================================
