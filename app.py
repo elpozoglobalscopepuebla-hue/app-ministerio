@@ -2,7 +2,6 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime, date
-import calendar
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Ministerio App", page_icon="🌱", layout="wide")
@@ -17,28 +16,20 @@ def inicializar_bd():
         id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL, categoria TEXT NOT NULL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS conversaciones (
         id INTEGER PRIMARY KEY AUTOINCREMENT, estudiante_id INTEGER, tipo_conversacion TEXT, fecha DATE)''')
-    
-    # Nueva tabla semanal
     cursor.execute('''CREATE TABLE IF NOT EXISTS actividades_semanales (
         id INTEGER PRIMARY KEY AUTOINCREMENT, semana_str TEXT, mes_pertenencia TEXT, 
         grupos_realizados INTEGER, grupos_iniciados INTEGER, nombres_iglesia TEXT)''')
     
-    # Actualizaciones de tablas existentes (Migraciones seguras)
+    # Asegurar que existan las columnas extra
     columnas_estudiantes = {
-        "estado": "TEXT DEFAULT 'Activo'", 
-        "telefono": "TEXT DEFAULT 'Sin dato'", 
-        "escuela": "TEXT DEFAULT 'Sin dato'",
-        "edad": "TEXT DEFAULT 'Sin dato'",
-        "cumpleanos": "TEXT DEFAULT 'Sin dato'"
+        "estado": "TEXT DEFAULT 'Activo'", "telefono": "TEXT DEFAULT 'Sin dato'", 
+        "escuela": "TEXT DEFAULT 'Sin dato'", "edad": "TEXT DEFAULT 'Sin dato'", "cumpleanos": "TEXT DEFAULT 'Sin dato'"
     }
     for col, tipo in columnas_estudiantes.items():
         try: cursor.execute(f"ALTER TABLE estudiantes ADD COLUMN {col} {tipo}")
         except: pass
 
-    columnas_conversaciones = {
-        "registrado_por": "TEXT",
-        "nombre_visitante": "TEXT" # Para los no registrados
-    }
+    columnas_conversaciones = {"registrado_por": "TEXT", "nombre_visitante": "TEXT"}
     for col, tipo in columnas_conversaciones.items():
         try: cursor.execute(f"ALTER TABLE conversaciones ADD COLUMN {col} {tipo}")
         except: pass
@@ -82,7 +73,7 @@ menu = st.sidebar.radio("Navegación", [
 if menu == "📝 Registrar Interacción":
     st.title("📝 Registrar Interacciones")
     
-    # --- ALERTA REGLA DE 3 VECES ---
+    # --- ALERTA REGLA DE 3 VECES (Aparece fuera del formulario para no borrarse) ---
     if st.session_state['alerta_registro']:
         visitante = st.session_state['alerta_registro']
         st.warning(f"🔔 **¡Atención!** El visitante **{visitante}** ha acumulado un múltiplo de 3 interacciones. ¿Deseas agregarlo oficialmente como estudiante?")
@@ -97,7 +88,6 @@ if menu == "📝 Registrar Interacción":
                     c = conn.cursor()
                     c.execute("INSERT INTO estudiantes (nombre, categoria) VALUES (?, ?)", (visitante, cat))
                     nuevo_id = c.lastrowid
-                    # Vincular historial pasado
                     c.execute("UPDATE conversaciones SET estudiante_id = ?, nombre_visitante = NULL WHERE nombre_visitante = ?", (nuevo_id, visitante))
                     conn.commit()
                     conn.close()
@@ -110,7 +100,6 @@ if menu == "📝 Registrar Interacción":
                 st.rerun()
         st.markdown("---")
 
-    # --- FORMULARIO PRINCIPAL ---
     conn = sqlite3.connect('ministerio.db')
     estudiantes_activos = pd.read_sql_query("SELECT id, nombre, categoria FROM estudiantes WHERE estado = 'Activo' ORDER BY nombre", conn)
     visitantes_previos = pd.read_sql_query("SELECT DISTINCT nombre_visitante FROM conversaciones WHERE nombre_visitante IS NOT NULL", conn)
@@ -119,7 +108,9 @@ if menu == "📝 Registrar Interacción":
     nombres_dict = {f"{row['nombre']} ({row['categoria']})": row['id'] for _, row in estudiantes_activos.iterrows()}
     lista_visitantes = visitantes_previos['nombre_visitante'].tolist() if not visitantes_previos.empty else []
 
-    with st.container(border=True):
+    # FORMULARIO CON AUTO-LIMPIEZA (clear_on_submit=True)
+    with st.form("form_registro", clear_on_submit=True):
+        st.markdown("Al guardar, las casillas se limpiarán solas para que puedas registrar el siguiente rápidamente.")
         col1, col2 = st.columns(2)
         with col1:
             usuario = st.text_input("👤 Tu Nombre (Quien registra)*")
@@ -131,10 +122,12 @@ if menu == "📝 Registrar Interacción":
             est_seleccionados = st.multiselect("Selecciona uno o varios:", list(nombres_dict.keys()))
             
             st.markdown("**2. Visitantes / No Registrados**")
-            visitante_existente = st.selectbox("Sugerencias de meses pasados:", [""] + lista_visitantes)
-            visitante_nuevo = st.text_input("O escribe un nombre nuevo:")
+            visitante_existente = st.selectbox("Sugerencias de meses pasados (Opcional):", [""] + lista_visitantes)
+            visitante_nuevo = st.text_input("O escribe un nombre nuevo (Opcional):")
 
-        if st.button("Guardar Registros", use_container_width=True, type="primary"):
+        submit = st.form_submit_button("Guardar Registros", use_container_width=True, type="primary")
+        
+        if submit:
             visitante_final = visitante_nuevo.strip() if visitante_nuevo.strip() else visitante_existente
             
             if not usuario.strip():
@@ -146,17 +139,14 @@ if menu == "📝 Registrar Interacción":
                 c = conn.cursor()
                 fecha_str = fecha_conv.strftime("%Y-%m-%d")
                 
-                # Guardar oficiales
                 for est in est_seleccionados:
                     c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", 
                               (nombres_dict[est], tipo_conv, fecha_str, usuario.strip()))
                 
-                # Guardar visitante
                 if visitante_final:
                     c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", 
                               (visitante_final, tipo_conv, fecha_str, usuario.strip()))
                     
-                    # Checar regla de 3
                     c.execute("SELECT COUNT(*) FROM conversaciones WHERE nombre_visitante = ?", (visitante_final,))
                     conteo = c.fetchone()[0]
                     if conteo > 0 and conteo % 3 == 0:
@@ -164,7 +154,7 @@ if menu == "📝 Registrar Interacción":
 
                 conn.commit()
                 conn.close()
-                st.toast('Registrado con éxito', icon='✅')
+                st.success('¡Registrado con éxito! Las casillas han sido limpiadas.')
                 if st.session_state['alerta_registro']:
                     st.rerun()
 
@@ -175,8 +165,6 @@ elif menu == "📊 Resumen Mensual":
     st.title("📊 Resumen Mes a Mes")
     
     conn = sqlite3.connect('ministerio.db')
-    
-    # Obtener meses disponibles
     meses_df = pd.read_sql_query("SELECT DISTINCT strftime('%Y-%m', fecha) as mes FROM conversaciones UNION SELECT mes_pertenencia FROM actividades_semanales", conn)
     historial = [m for m in meses_df['mes'].dropna().tolist()]
     if not historial: historial = [date.today().strftime("%Y-%m")]
@@ -185,13 +173,11 @@ elif menu == "📊 Resumen Mensual":
     mes_sel = st.selectbox("📅 Selecciona el mes a analizar:", historial)
     st.divider()
 
-    # Métrica: Jesús Únicos
     c = conn.cursor()
     c.execute('''SELECT COUNT(DISTINCT estudiante_id) FROM conversaciones 
                  WHERE tipo_conversacion = 'Conversaciones con Jesus' AND strftime('%Y-%m', fecha) = ? AND estudiante_id IS NOT NULL''', (mes_sel,))
     unicas_jesus = c.fetchone()[0]
 
-    # Resumen Semanal Acumulado (Suma del mes)
     c.execute('''SELECT SUM(grupos_realizados), SUM(grupos_iniciados) FROM actividades_semanales WHERE mes_pertenencia = ?''', (mes_sel,))
     sumas_grupales = c.fetchone()
     total_g_realizados = sumas_grupales[0] if sumas_grupales[0] else 0
@@ -212,8 +198,7 @@ elif menu == "📊 Resumen Mensual":
         FROM conversaciones c
         JOIN estudiantes e ON c.estudiante_id = e.id
         WHERE strftime('%Y-%m', c.fecha) = '{mes_sel}'
-        GROUP BY e.id
-        ORDER BY 'Total General' DESC
+        GROUP BY e.id ORDER BY 'Total General' DESC
     """
     df_rendimiento = pd.read_sql_query(query_est, conn)
     st.dataframe(df_rendimiento, use_container_width=True, hide_index=True)
@@ -226,20 +211,35 @@ elif menu == "📊 Resumen Mensual":
             st.info(f"**Semana {sem.split('W')[1]}:** {nombres}")
     else:
         st.write("No hay registros este mes.")
-        
     conn.close()
 
 # =====================================================================
-# 3. DIRECTORIO ESTUDIANTES
+# 3. DIRECTORIO ESTUDIANTES (MODIFICADO: SOLO LECTURA + AUTO-LIMPIEZA)
 # =====================================================================
 elif menu == "👤 Directorio Estudiantes":
     st.title("👤 Directorio de Estudiantes")
     
-    tab1, tab2 = st.tabs(["Agregar Nuevo", "Cambiar Estado (Activo / No participativo)"])
+    tab1, tab2, tab3 = st.tabs(["📖 Consultar Directorio", "➕ Agregar Nuevo", "🔄 Cambiar Estado"])
     
+    # Taba 1: SOLO LECTURA
     with tab1:
-        with st.form("form_nuevo_estudiante"):
-            st.markdown("Los campos con * son obligatorios.")
+        st.write("Explora la base de datos de manera segura (No se puede editar desde aquí).")
+        filtro_estado = st.radio("Filtrar por estado:", ["Activos", "No participativos", "Graduados"], horizontal=True)
+        
+        estado_sql = "Activo"
+        if filtro_estado == "No participativos": estado_sql = "No participativo"
+        elif filtro_estado == "Graduados": estado_sql = "Graduado"
+        
+        conn = sqlite3.connect('ministerio.db')
+        df_consulta = pd.read_sql_query(f"SELECT nombre as 'Nombre', categoria as 'Categoría', telefono as 'Teléfono', escuela as 'Escuela', edad as 'Edad', cumpleanos as 'Cumpleaños' FROM estudiantes WHERE estado = '{estado_sql}' ORDER BY nombre", conn)
+        conn.close()
+        
+        st.dataframe(df_consulta, use_container_width=True, hide_index=True)
+
+    # Taba 2: AGREGAR NUEVO CON AUTO-LIMPIEZA
+    with tab2:
+        with st.form("form_nuevo_estudiante", clear_on_submit=True):
+            st.markdown("Los campos con * son obligatorios. Al guardar, se limpiarán los datos automáticamente.")
             c1, c2 = st.columns(2)
             with c1:
                 nombre = st.text_input("Nombre Completo *")
@@ -250,23 +250,23 @@ elif menu == "👤 Directorio Estudiantes":
                 escuela = st.text_input("Escuela")
                 cumple = st.text_input("Cumpleaños (Ej. 15 de Mayo)")
                 
-            if st.form_submit_button("Guardar Estudiante"):
+            if st.form_submit_button("Guardar Estudiante", type="primary"):
                 if not nombre.strip():
                     st.error("El nombre es obligatorio.")
                 else:
                     conn = sqlite3.connect('ministerio.db')
-                    c = conn.cursor()
-                    c.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) 
+                    conn.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) 
                                  VALUES (?, ?, ?, ?, ?, ?)""", 
                               (nombre.strip(), categoria, tel if tel else "Sin dato", escuela if escuela else "Sin dato", edad if edad else "Sin dato", cumple if cumple else "Sin dato"))
                     conn.commit()
                     conn.close()
-                    st.success("Estudiante guardado.")
+                    st.success(f"Estudiante '{nombre}' guardado exitosamente.")
 
-    with tab2:
+    # Taba 3: CAMBIAR ESTADO
+    with tab3:
         st.write("Mueve a los estudiantes inactivos a 'No participativos' para que no saturen la lista al registrar conversaciones.")
         conn = sqlite3.connect('ministerio.db')
-        df_activos = pd.read_sql_query("SELECT id, nombre, estado FROM estudiantes WHERE estado IN ('Activo', 'No participativo')", conn)
+        df_activos = pd.read_sql_query("SELECT id, nombre, estado FROM estudiantes WHERE estado IN ('Activo', 'No participativo') ORDER BY nombre", conn)
         
         if not df_activos.empty:
             for _, row in df_activos.iterrows():
@@ -274,7 +274,7 @@ elif menu == "👤 Directorio Estudiantes":
                 col_n.write(f"**{row['nombre']}** - Actual: `{row['estado']}`")
                 
                 nuevo_estado = "No participativo" if row['estado'] == "Activo" else "Activo"
-                texto_btn = "Pausar (No participativo)" if row['estado'] == "Activo" else "Reintegrar a Activos"
+                texto_btn = "Pausar" if row['estado'] == "Activo" else "Reintegrar a Activos"
                 
                 if col_btn.button(texto_btn, key=f"btn_{row['id']}"):
                     conn.execute("UPDATE estudiantes SET estado = ? WHERE id = ?", (nuevo_estado, row['id']))
@@ -296,14 +296,10 @@ elif menu == "👥 Reporte Semanal":
     c.execute("SELECT grupos_realizados, nombres_iglesia, grupos_iniciados FROM actividades_semanales WHERE semana_str = ?", (semana_actual,))
     datos_sem = c.fetchone()
     
-    val_realizados = datos_sem[0] if datos_sem else 0
-    val_nombres = datos_sem[1] if datos_sem else ""
-    val_iniciados = datos_sem[2] if datos_sem else 0
-
-    with st.form("form_semanal"):
-        r = st.number_input("¿Cuántos grupitos basados en la fe tuviste en esta semana?", min_value=0, value=val_realizados)
-        i = st.number_input("¿Cuántos grupitos basados en la fe se arrancaron la semana pasada?", min_value=0, value=val_iniciados)
-        n = st.text_area("¿A quién llevaste a la iglesia esta semana? (Escribe los nombres separados por comas)", value=val_nombres)
+    with st.form("form_semanal", clear_on_submit=False):
+        r = st.number_input("¿Cuántos grupitos basados en la fe tuviste en esta semana?", min_value=0, value=datos_sem[0] if datos_sem else 0)
+        i = st.number_input("¿Cuántos grupitos basados en la fe se arrancaron la semana pasada?", min_value=0, value=datos_sem[2] if datos_sem else 0)
+        n = st.text_area("¿A quién llevaste a la iglesia esta semana? (Escribe los nombres separados por comas)", value=datos_sem[1] if datos_sem else "")
         
         if st.form_submit_button("Guardar Reporte Semanal", type="primary"):
             if datos_sem:
@@ -317,7 +313,7 @@ elif menu == "👥 Reporte Semanal":
     conn.close()
 
 # =====================================================================
-# 5. ADMINISTRACIÓN AVANZADA (ESTILO EXCEL)
+# 5. ADMINISTRACIÓN AVANZADA
 # =====================================================================
 elif menu == "⚙️ Administración Avanzada":
     st.title("⚙️ Base de Datos Maestra")
@@ -326,21 +322,16 @@ elif menu == "⚙️ Administración Avanzada":
     
     if pwd == "elpozoregistradatos":
         st.success("Acceso concedido.")
-        st.write("Haz doble clic en cualquier celda para editar (como en Excel). No olvides presionar Enter al terminar de escribir en la celda y luego darle al botón de Guardar.")
-        
         conn = sqlite3.connect('ministerio.db')
         
-        tab_activos, tab_graduados = st.tabs(["Estudiantes Activos/Inactivos", "🎓 Hoja de Graduados"])
+        tab_activos, tab_graduados, tab_importar = st.tabs(["Estudiantes Activos/Inactivos", "🎓 Hoja de Graduados", "📥 Importación Masiva (Copiar y Pegar)"])
         
-        # --- TABLA 1: ACTIVOS Y NO PARTICIPATIVOS ---
         with tab_activos:
+            st.write("Haz doble clic en cualquier celda para editar. Al terminar presiona Guardar.")
             df_main = pd.read_sql_query("SELECT * FROM estudiantes WHERE estado != 'Graduado'", conn)
-            
-            # El data editor
             edited_main = st.data_editor(df_main, key="editor_main", use_container_width=True, hide_index=True,
                                          column_config={"id": st.column_config.NumberColumn(disabled=True),
                                                         "estado": st.column_config.SelectboxColumn(options=["Activo", "No participativo", "Graduado"])})
-            
             if st.button("💾 Guardar Cambios Generales"):
                 c = conn.cursor()
                 for _, row in edited_main.iterrows():
@@ -350,18 +341,14 @@ elif menu == "⚙️ Administración Avanzada":
                 st.success("Cambios guardados.")
                 st.rerun()
 
-        # --- TABLA 2: HOJA EXCLUSIVA DE GRADUADOS ---
         with tab_graduados:
-            st.warning("Los estudiantes aquí mostrados ya no aparecerán en el sistema regular para registro.")
             df_grad = pd.read_sql_query("SELECT * FROM estudiantes WHERE estado = 'Graduado'", conn)
-            
             if df_grad.empty:
                 st.info("Aún no tienes estudiantes graduados.")
             else:
                 edited_grad = st.data_editor(df_grad, key="editor_grad", use_container_width=True, hide_index=True,
                                              column_config={"id": st.column_config.NumberColumn(disabled=True),
-                                                            "estado": st.column_config.SelectboxColumn(options=["Graduado", "Activo", "No participativo"])})
-                
+                                                            "estado": st.column_config.SelectboxColumn(options=["Graduado", "Activo"])})
                 if st.button("💾 Guardar Cambios de Graduados"):
                     c = conn.cursor()
                     for _, row in edited_grad.iterrows():
@@ -370,6 +357,48 @@ elif menu == "⚙️ Administración Avanzada":
                     conn.commit()
                     st.success("Cambios guardados.")
                     st.rerun()
+
+        # NUEVA PESTAÑA: IMPORTACIÓN MASIVA
+        with tab_importar:
+            st.markdown("### 📥 Agrega múltiples estudiantes desde Excel o Google Sheets")
+            st.info("**Instrucciones:** Selecciona las filas en tu Excel, dale a 'Copiar' y luego 'Pegar' dentro del cuadro de texto de abajo.")
+            
+            st.markdown("**🚨 EL ORDEN EXACTO DE TUS COLUMNAS EN EXCEL DEBE SER ESTE:**")
+            st.code("Nombre | Categoría | Teléfono | Escuela | Edad | Cumpleaños")
+            st.markdown("*(Si alguien no tiene teléfono o escuela, deja la celda en blanco en tu Excel pero no borres la columna)*")
+            
+            datos_pegados = st.text_area("Pega los datos de Excel aquí:", height=200, placeholder="Juan Perez\tWanderer\t555-1234\tUVM\t20\t12 de Marzo\nAna Gomez\tExplorer\t...\t...\t...\t...")
+            
+            if st.button("🚀 Importar Datos Ahora", type="primary"):
+                if datos_pegados.strip():
+                    c = conn.cursor()
+                    lineas = datos_pegados.strip().split('\n')
+                    conteo_exito = 0
+                    
+                    for linea in lineas:
+                        if not linea.strip(): continue
+                        # Al pegar desde Excel, las columnas se separan por una tabulación (\t)
+                        cols = linea.split('\t')
+                        
+                        # Rellenar con "Sin dato" si el Excel tiene menos de 6 columnas
+                        while len(cols) < 6: cols.append("Sin dato")
+                        
+                        nom = cols[0].strip()
+                        cat = cols[1].strip() if cols[1].strip() else "Wanderer"
+                        tel = cols[2].strip() if cols[2].strip() else "Sin dato"
+                        esc = cols[3].strip() if cols[3].strip() else "Sin dato"
+                        eda = cols[4].strip() if cols[4].strip() else "Sin dato"
+                        cum = cols[5].strip() if cols[5].strip() else "Sin dato"
+                        
+                        if nom:
+                            c.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) 
+                                         VALUES (?, ?, ?, ?, ?, ?)""", (nom, cat, tel, esc, eda, cum))
+                            conteo_exito += 1
+                    
+                    conn.commit()
+                    st.success(f"✅ ¡Importación exitosa! Se agregaron {conteo_exito} estudiantes a la base de datos.")
+                else:
+                    st.error("No hay datos para importar. Por favor pega la información de Excel en el cuadro.")
                     
         conn.close()
     elif pwd != "":
