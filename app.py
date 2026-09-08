@@ -1,14 +1,17 @@
 import streamlit as st
 import sqlite3
+import pandas as pd
 from datetime import datetime, date
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="App Ministerio", page_icon="📖", layout="centered")
+# --- CONFIGURACIÓN DE LA PÁGINA (ESTÉTICA) ---
+st.set_page_config(page_title="Ministerio App", page_icon="🌱", layout="wide")
 
 # --- FUNCIONES DE BASE DE DATOS ---
 def inicializar_bd():
     conn = sqlite3.connect('ministerio.db')
     cursor = conn.cursor()
+    
+    # Crear tablas principales
     cursor.execute('''CREATE TABLE IF NOT EXISTS estudiantes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL, categoria TEXT NOT NULL)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS conversaciones (
@@ -16,6 +19,13 @@ def inicializar_bd():
         FOREIGN KEY(estudiante_id) REFERENCES estudiantes(id))''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS actividades_mensuales (
         id INTEGER PRIMARY KEY AUTOINCREMENT, mes TEXT, grupos_realizados INTEGER, grupos_iniciados INTEGER, asistencia_iglesia INTEGER)''')
+    
+    # Actualización automática de la base de datos (agrega la columna 'registrado_por' si no existe)
+    try:
+        cursor.execute("ALTER TABLE conversaciones ADD COLUMN registrado_por TEXT")
+    except sqlite3.OperationalError:
+        pass # Si la columna ya existe, simplemente continúa
+        
     conn.commit()
     conn.close()
 
@@ -27,166 +37,214 @@ def obtener_estudiantes():
     conn.close()
     return datos
 
-# Inicializar DB al cargar la app
+# Inicializar DB
 inicializar_bd()
 
+# --- ESTILO PERSONALIZADO ---
+st.markdown("""
+    <style>
+    .main {background-color: #f8f9fa;}
+    h1 {color: #1f77b4;}
+    h2, h3 {color: #2c3e50;}
+    .stAlert {border-radius: 10px;}
+    </style>
+    """, unsafe_allow_html=True)
+
 # --- MENÚ LATERAL (SIDEBAR) ---
-st.sidebar.title("📖 Ministerio App")
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3256/3256114.png", width=100)
+st.sidebar.title("🌱 Ministerio App")
+st.sidebar.markdown("---")
 menu = st.sidebar.radio("Navegación", [
-    "📊 Dashboard Mensual", 
-    "👤 Agregar Estudiante", 
-    "💬 Registrar Conversación", 
+    "📝 Registrar Conversación", 
+    "📊 Resumen Mensual",
+    "👤 Gestión de Estudiantes", 
     "👥 Actividad Grupal"
 ])
 
-# --- PANTALLA: AGREGAR ESTUDIANTE ---
-if menu == "👤 Agregar Estudiante":
-    st.header("Agregar Nuevo Estudiante")
-    
-    with st.form("form_estudiante"):
-        nombre = st.text_input("Nombre del estudiante")
-        categoria = st.selectbox("Categoría Espiritual", ["Wanderer", "Sojourner", "Explorer", "Follower", "Guia"])
-        submit = st.form_submit_button("Guardar Estudiante")
-        
-        if submit:
-            if nombre.strip() == "":
-                st.error("El nombre no puede estar vacío.")
-            else:
-                conn = sqlite3.connect('ministerio.db')
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO estudiantes (nombre, categoria) VALUES (?, ?)", (nombre, categoria))
-                conn.commit()
-                conn.close()
-                st.success(f"¡{nombre} agregado exitosamente como {categoria}!")
-
-# --- PANTALLA: REGISTRAR CONVERSACIÓN ---
-elif menu == "💬 Registrar Conversación":
-    st.header("Registrar una Conversación")
+# --- PANTALLA: REGISTRAR CONVERSACIÓN (REDICEÑADA) ---
+if menu == "📝 Registrar Conversación":
+    st.title("📝 Registrar Interacciones")
+    st.markdown("Selecciona uno o varios estudiantes para registrar la misma interacción de una sola vez.")
     
     estudiantes = obtener_estudiantes()
     if not estudiantes:
-        st.warning("Primero debes agregar estudiantes en la sección 'Agregar Estudiante'.")
+        st.warning("Primero debes agregar estudiantes en la sección 'Gestión de Estudiantes'.")
     else:
-        # Crear un diccionario para mostrar los nombres pero guardar el ID
-        nombres_dict = {f"{est[1]} ({est[2]})": est[0] for est in estudiantes}
+        nombres_dict = {f"{est[1]} - {est[2]}": est[0] for est in estudiantes}
         
-        with st.form("form_conversacion"):
-            estudiante_seleccionado = st.selectbox("Selecciona al estudiante", list(nombres_dict.keys()))
-            tipo_conv = st.selectbox("Tipo de conversación", ["1a1", "Conversaciones con Jesus", "Conversaciones intencionales"])
-            fecha_conv = st.date_input("Fecha", date.today())
-            
-            submit_conv = st.form_submit_button("Registrar")
-            
-            if submit_conv:
-                id_estudiante = nombres_dict[estudiante_seleccionado]
-                # Convertir la fecha a formato texto para SQLite
-                fecha_str = fecha_conv.strftime("%Y-%m-%d")
+        with st.container(border=True):
+            with st.form("form_conversacion"):
+                # Uso de columnas para un diseño más limpio
+                col1, col2 = st.columns(2)
                 
-                conn = sqlite3.connect('ministerio.db')
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha) VALUES (?, ?, ?)", 
-                               (id_estudiante, tipo_conv, fecha_str))
-                conn.commit()
-                conn.close()
-                st.success("Conversación registrada exitosamente.")
+                with col1:
+                    usuario_registro = st.text_input("👤 Tu Nombre (Quien registra la conversación)*", placeholder="Ej. David")
+                    fecha_conv = st.date_input("📅 Fecha", date.today())
+                    
+                with col2:
+                    tipo_conv = st.selectbox("💬 Tipo de conversación", ["1a1", "Conversaciones con Jesus", "Conversaciones intencionales"])
+                    estudiantes_seleccionados = st.multiselect("👥 Selecciona a los estudiantes (puedes elegir varios)*", list(nombres_dict.keys()))
+                
+                st.markdown("---")
+                submit_conv = st.form_submit_button("Guardar Registros", use_container_width=True)
+                
+                if submit_conv:
+                    if not usuario_registro.strip():
+                        st.error("Por favor, ingresa tu nombre.")
+                    elif not estudiantes_seleccionados:
+                        st.error("Por favor, selecciona al menos un estudiante.")
+                    else:
+                        fecha_str = fecha_conv.strftime("%Y-%m-%d")
+                        conn = sqlite3.connect('ministerio.db')
+                        cursor = conn.cursor()
+                        
+                        # Registrar una conversación por cada estudiante seleccionado
+                        for est_nombre in estudiantes_seleccionados:
+                            id_estudiante = nombres_dict[est_nombre]
+                            cursor.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", 
+                                           (id_estudiante, tipo_conv, fecha_str, usuario_registro.strip()))
+                        
+                        conn.commit()
+                        conn.close()
+                        st.toast('¡Conversaciones registradas con éxito!', icon='✅')
+                        st.success(f"Se registraron {len(estudiantes_seleccionados)} interacciones por {usuario_registro}.")
 
-# --- PANTALLA: ACTIVIDAD GRUPAL ---
-elif menu == "👥 Actividad Grupal":
-    st.header("Registro de Grupos de Fe e Iglesia")
-    st.info("Estos datos se guardan para el mes actual. Si los actualizas, se sobreescribirá la información de este mes.")
-    
-    mes_actual = date.today().strftime("%Y-%m")
-    
-    # Buscar si ya hay datos de este mes para mostrarlos por defecto
-    conn = sqlite3.connect('ministerio.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT grupos_realizados, grupos_iniciados, asistencia_iglesia FROM actividades_mensuales WHERE mes = ?", (mes_actual,))
-    datos_actuales = cursor.fetchone()
-    conn.close()
-    
-    val_realizados = datos_actuales[0] if datos_actuales else 0
-    val_iniciados = datos_actuales[1] if datos_actuales else 0
-    val_iglesia = datos_actuales[2] if datos_actuales else 0
-
-    with st.form("form_grupos"):
-        realizados = st.number_input("Grupos de fe realizados (total del mes)", min_value=0, value=val_realizados)
-        iniciados = st.number_input("Nuevos grupos iniciados este mes", min_value=0, value=val_iniciados)
-        iglesia = st.number_input("Personas que fueron a la iglesia este mes", min_value=0, value=val_iglesia)
-        
-        submit_grupos = st.form_submit_button("Guardar Reporte Grupal")
-        
-        if submit_grupos:
-            conn = sqlite3.connect('ministerio.db')
-            cursor = conn.cursor()
-            if datos_actuales:
-                cursor.execute('''UPDATE actividades_mensuales 
-                                  SET grupos_realizados=?, grupos_iniciados=?, asistencia_iglesia=? WHERE mes=?''', 
-                                  (realizados, iniciados, iglesia, mes_actual))
-            else:
-                cursor.execute('''INSERT INTO actividades_mensuales (mes, grupos_realizados, grupos_iniciados, asistencia_iglesia) 
-                                  VALUES (?, ?, ?, ?)''', (mes_actual, realizados, iniciados, iglesia))
-            conn.commit()
-            conn.close()
-            st.success("Datos grupales actualizados para este mes.")
-
-# --- PANTALLA: DASHBOARD MENSUAL ---
-elif menu == "📊 Dashboard Mensual":
-    st.header("Dashboard Mensual")
-    
-    # Seleccionar el mes a visualizar
-    meses_opciones = [date.today().strftime("%Y-%m")]
+# --- PANTALLA: DASHBOARD MENSUAL (MEJORADA) ---
+elif menu == "📊 Resumen Mensual":
+    st.title("📊 Resumen Mes a Mes")
     
     conn = sqlite3.connect('ministerio.db')
     cursor = conn.cursor()
     
-    # Obtener todos los meses históricos que tengan registros
+    # Obtener historial de meses
     cursor.execute("SELECT DISTINCT strftime('%Y-%m', fecha) FROM conversaciones UNION SELECT mes FROM actividades_mensuales")
-    historial = cursor.fetchall()
-    for m in historial:
-        if m[0] and m[0] not in meses_opciones:
-            meses_opciones.append(m[0])
-    meses_opciones.sort(reverse=True)
+    historial = [m[0] for m in cursor.fetchall() if m[0]]
+    if not historial:
+        historial = [date.today().strftime("%Y-%m")]
+    historial.sort(reverse=True)
     
-    mes_seleccionado = st.selectbox("Selecciona el mes a visualizar:", meses_opciones)
-    st.markdown(f"### Resultados de {mes_seleccionado}")
-    st.divider()
-
-    # Métrica de Primera Conversación de Jesús (Conteo único)
+    # Selector de mes intuitivo
+    mes_seleccionado = st.selectbox("📅 Selecciona el mes a analizar:", historial)
+    
+    st.markdown("---")
+    
+    # METRICAS CLAVE
     cursor.execute('''SELECT COUNT(DISTINCT estudiante_id) FROM conversaciones 
                       WHERE tipo_conversacion = 'Conversaciones con Jesus' AND strftime('%Y-%m', fecha) = ?''', (mes_seleccionado,))
     unicas_jesus = cursor.fetchone()[0]
     
-    st.subheader("Métrica Principal")
-    st.metric("Primera Conversación de Jesús (Personas Únicas)", unicas_jesus)
-    
-    # Conversaciones Totales
-    st.subheader("Total de Conversaciones Registradas")
-    cursor.execute('''SELECT tipo_conversacion, COUNT(*) FROM conversaciones 
-                      WHERE strftime('%Y-%m', fecha) = ? GROUP BY tipo_conversacion''', (mes_seleccionado,))
-    totales_conv = cursor.fetchall()
-    
-    if totales_conv:
-        col1, col2, col3 = st.columns(3)
-        dict_conv = {k:v for k,v in totales_conv}
-        col1.metric("1 a 1", dict_conv.get("1a1", 0))
-        col2.metric("Con Jesús (Total)", dict_conv.get("Conversaciones con Jesus", 0))
-        col3.metric("Intencionales", dict_conv.get("Conversaciones intencionales", 0))
-    else:
-        st.info("No hay conversaciones registradas este mes.")
-
-    st.divider()
-    
-    # Actividades Grupales
-    st.subheader("Grupos de Fe e Iglesia")
-    cursor.execute("SELECT grupos_realizados, grupos_iniciados, asistencia_iglesia FROM actividades_mensuales WHERE mes = ?", (mes_seleccionado,))
-    actividades = cursor.fetchone()
-    
-    if actividades:
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Grupos Realizados", actividades[0])
-        col2.metric("Grupos Iniciados", actividades[1])
-        col3.metric("Asistencia a Iglesia", actividades[2])
-    else:
-        st.info("No hay datos de grupos de fe registrados para este mes.")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        with st.container(border=True):
+            st.metric("🌟 Conversaciones con Jesús (Únicas)", unicas_jesus, help="Cuenta solo 1 vez por estudiante al mes.")
+            
+    with col2:
+        cursor.execute('''SELECT tipo_conversacion, COUNT(*) FROM conversaciones 
+                          WHERE strftime('%Y-%m', fecha) = ? GROUP BY tipo_conversacion''', (mes_seleccionado,))
+        totales_conv = {k:v for k,v in cursor.fetchall()}
         
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total 1 a 1", totales_conv.get("1a1", 0))
+        c2.metric("Con Jesús (Total)", totales_conv.get("Conversaciones con Jesus", 0))
+        c3.metric("Intencionales", totales_conv.get("Conversaciones intencionales", 0))
+
+    st.markdown("### 👥 Desglose de Actividad por Miembro del Equipo")
+    # Tabla de quién registró qué
+    query = f"""
+        SELECT registrado_por as 'Líder', tipo_conversacion as 'Tipo', COUNT(*) as 'Cantidad'
+        FROM conversaciones 
+        WHERE strftime('%Y-%m', fecha) = '{mes_seleccionado}' AND registrado_por IS NOT NULL
+        GROUP BY registrado_por, tipo_conversacion
+    """
+    df_lideres = pd.read_sql_query(query, conn)
+    
+    if not df_lideres.empty:
+        # Reorganizar la tabla para que sea más fácil de leer
+        df_pivot = df_lideres.pivot(index='Líder', columns='Tipo', values='Cantidad').fillna(0).astype(int)
+        st.dataframe(df_pivot, use_container_width=True)
+    else:
+        st.info("No hay registros con nombres de líderes para este mes.")
+
+    # Registro en crudo
+    with st.expander("Ver todas las interacciones del mes (Historial)"):
+        query_historial = f"""
+            SELECT c.fecha as 'Fecha', c.registrado_por as 'Registró', e.nombre as 'Estudiante', e.categoria as 'Categoría', c.tipo_conversacion as 'Interacción'
+            FROM conversaciones c
+            JOIN estudiantes e ON c.estudiante_id = e.id
+            WHERE strftime('%Y-%m', c.fecha) = '{mes_seleccionado}'
+            ORDER BY c.fecha DESC
+        """
+        df_historial = pd.read_sql_query(query_historial, conn)
+        st.dataframe(df_historial, use_container_width=True, hide_index=True)
+
+    conn.close()
+
+# --- PANTALLA: GESTIÓN DE ESTUDIANTES ---
+elif menu == "👤 Gestión de Estudiantes":
+    st.title("👤 Base de Datos de Estudiantes")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("Agregar Nuevo")
+        with st.form("form_estudiante"):
+            nombre = st.text_input("Nombre completo")
+            categoria = st.selectbox("Categoría Espiritual", ["Wanderer", "Sojourner", "Explorer", "Follower", "Guia"])
+            submit = st.form_submit_button("Guardar Estudiante", use_container_width=True)
+            
+            if submit:
+                if nombre.strip():
+                    conn = sqlite3.connect('ministerio.db')
+                    conn.execute("INSERT INTO estudiantes (nombre, categoria) VALUES (?, ?)", (nombre.strip(), categoria))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"Agregado: {nombre}")
+                else:
+                    st.error("El nombre es requerido.")
+
+    with col2:
+        st.subheader("Directorio Actual")
+        conn = sqlite3.connect('ministerio.db')
+        df_est = pd.read_sql_query("SELECT nombre as 'Nombre', categoria as 'Categoría' FROM estudiantes ORDER BY nombre", conn)
+        conn.close()
+        
+        if not df_est.empty:
+            st.dataframe(df_est, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aún no hay estudiantes registrados.")
+
+# --- PANTALLA: ACTIVIDAD GRUPAL ---
+elif menu == "👥 Actividad Grupal":
+    st.title("👥 Grupos de Fe e Iglesia")
+    st.markdown("Registra las métricas grupales del mes. Si actualizas estos números, **reemplazarán** los datos anteriores de este mismo mes.")
+    
+    mes_actual = date.today().strftime("%Y-%m")
+    
+    conn = sqlite3.connect('ministerio.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT grupos_realizados, grupos_iniciados, asistencia_iglesia FROM actividades_mensuales WHERE mes = ?", (mes_actual,))
+    datos = cursor.fetchone()
+    
+    with st.container(border=True):
+        with st.form("form_grupos"):
+            st.subheader(f"Métricas para: {mes_actual}")
+            
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                realizados = st.number_input("Grupos de fe realizados", min_value=0, value=datos[0] if datos else 0)
+            with c2:
+                iniciados = st.number_input("Nuevos grupos iniciados", min_value=0, value=datos[1] if datos else 0)
+            with c3:
+                iglesia = st.number_input("Asistencia a la iglesia", min_value=0, value=datos[2] if datos else 0)
+            
+            st.markdown("---")
+            if st.form_submit_button("Guardar Reporte Grupal", use_container_width=True):
+                if datos:
+                    cursor.execute("UPDATE actividades_mensuales SET grupos_realizados=?, grupos_iniciados=?, asistencia_iglesia=? WHERE mes=?", 
+                                      (realizados, iniciados, iglesia, mes_actual))
+                else:
+                    cursor.execute("INSERT INTO actividades_mensuales (mes, grupos_realizados, grupos_iniciados, asistencia_iglesia) VALUES (?, ?, ?, ?)", 
+                                      (mes_actual, realizados, iniciados, iglesia))
+                conn.commit()
+                st.success("Métricas grupales actualizadas con éxito.")
     conn.close()
