@@ -16,7 +16,6 @@ def inicializar_bd():
     cursor.execute('''CREATE TABLE IF NOT EXISTS conversaciones (
         id INTEGER PRIMARY KEY AUTOINCREMENT, estudiante_id INTEGER, tipo_conversacion TEXT, fecha DATE)''')
     
-    # NUEVA TABLA SEMANAL (Permite múltiples registros en la misma semana sin borrarse)
     cursor.execute('''CREATE TABLE IF NOT EXISTS reportes_grupales (
         id INTEGER PRIMARY KEY AUTOINCREMENT, semana_str TEXT, mes_pertenencia TEXT, 
         grupos_realizados INTEGER, grupos_iniciados INTEGER, nombres_iglesia TEXT, registrado_por TEXT)''')
@@ -34,7 +33,6 @@ def inicializar_bd():
         try: cursor.execute(f"ALTER TABLE conversaciones ADD COLUMN {col} {tipo}")
         except: pass
 
-    # Migrar datos viejos si existe la tabla anterior
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='actividades_semanales'")
     if cursor.fetchone():
         cursor.execute("SELECT COUNT(*) FROM reportes_grupales")
@@ -52,7 +50,6 @@ def obtener_semana_actual():
     num_semana = hoy.isocalendar()[1]
     return f"{hoy.year}-W{num_semana:02d}", hoy.strftime("%Y-%m")
 
-# Manejo de múltiples alertas de visitantes (Lista)
 if 'alertas_registro' not in st.session_state:
     st.session_state['alertas_registro'] = []
 
@@ -75,12 +72,11 @@ menu = st.sidebar.radio("Navegación", [
 ])
 
 # =====================================================================
-# 1. SÚPER FORMULARIO (CORREGIDO Y OPTIMIZADO)
+# 1. SÚPER FORMULARIO
 # =====================================================================
 if menu == "📝 Súper Registro (Diario/Semanal)":
     st.title("📝 Registro Integral")
     
-    # --- SISTEMA DE ALERTAS (REGLA DE 3 VECES) ---
     if st.session_state['alertas_registro']:
         visitante = st.session_state['alertas_registro'][0]
         st.warning(f"🔔 **¡Atención!** El visitante **{visitante}** ha acumulado 3 (o más) interacciones. ¿Deseas agregarlo oficialmente?")
@@ -112,7 +108,7 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
     conn.close()
 
     with st.form("form_super_registro", clear_on_submit=True):
-        st.markdown("### 👤 1. Datos del Líder")
+        st.markdown("### 👤 1. Datos del Staff")
         col1, col2 = st.columns(2)
         with col1: usuario = st.text_input("Tu Nombre (Quien registra)*", value="") 
         with col2: fecha_conv = st.date_input("📅 Fecha de interacciones", date.today())
@@ -156,35 +152,31 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
                 conn = sqlite3.connect('ministerio.db')
                 c = conn.cursor()
                 fecha_str = fecha_conv.strftime("%Y-%m-%d")
-                lider = usuario.strip()
+                staff = usuario.strip()
                 
-                # Función interna para procesar visitantes
                 def guardar_visitantes(texto_visitantes, tipo):
                     if not texto_visitantes.strip(): return
                     nombres = [nom.strip() for nom in texto_visitantes.split(",") if nom.strip()]
                     for nom in nombres:
-                        c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nom, tipo, fecha_str, lider))
+                        c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nom, tipo, fecha_str, staff))
                         c.execute("SELECT COUNT(*) FROM conversaciones WHERE nombre_visitante = ?", (nom,))
                         if c.fetchone()[0] % 3 == 0:
                             if nom not in st.session_state['alertas_registro']:
                                 st.session_state['alertas_registro'].append(nom)
 
-                # Guardar Estudiantes Oficiales
-                for est in est_1a1: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "1a1", fecha_str, lider))
-                for est in est_jesus: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones con Jesus", fecha_str, lider))
-                for est in est_intencionales: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones intencionales", fecha_str, lider))
+                for est in est_1a1: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "1a1", fecha_str, staff))
+                for est in est_jesus: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones con Jesus", fecha_str, staff))
+                for est in est_intencionales: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones intencionales", fecha_str, staff))
                 
-                # Guardar Visitantes
                 guardar_visitantes(vis_1a1, "1a1")
                 guardar_visitantes(vis_jesus, "Conversaciones con Jesus")
                 guardar_visitantes(vis_intencionales, "Conversaciones intencionales")
 
-                # Guardar Reporte Semanal (solo si llenó algo mayor a cero o escribió texto)
                 if r > 0 or i > 0 or n.strip():
                     c.execute("""INSERT INTO reportes_grupales 
                                  (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) 
                                  VALUES (?, ?, ?, ?, ?, ?)""", 
-                              (semana_actual, mes_actual, r, i, n, lider))
+                              (semana_actual, mes_actual, r, i, n, staff))
                 
                 conn.commit()
                 conn.close()
@@ -209,38 +201,49 @@ elif menu == "📊 Resumen Mensual":
     st.divider()
 
     c = conn.cursor()
-    # 1. Total 1a1 e Intencionales
+    # Totales crudos
     c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = '1a1' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
     tot_1a1 = c.fetchone()[0]
     
     c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones intencionales' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
     tot_int = c.fetchone()[0]
 
-    # 2. Únicos con Jesús
+    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones con Jesus' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
+    tot_jesus = c.fetchone()[0]
+
+    # Personas únicas con Jesús
     c.execute("SELECT COUNT(DISTINCT COALESCE(estudiante_id, nombre_visitante)) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones con Jesus' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
     unicas_jesus = c.fetchone()[0]
 
-    # 3. Sumas grupales (COALESCE asegura que no haya errores matemáticos)
+    # Sumas grupales
     c.execute("SELECT COALESCE(SUM(grupos_realizados), 0), COALESCE(SUM(grupos_iniciados), 0) FROM reportes_grupales WHERE mes_pertenencia = ?", (mes_sel,))
     sumas_grupales = c.fetchone()
 
     # --- PÁRRAFO EXPLICATIVO ---
-    st.success(f"📖 **Resumen Explicativo:** Durante el mes de **{mes_sel}**, el equipo sostuvo **{tot_1a1}** conversaciones 1 a 1 y **{tot_int}** pláticas intencionales. El impacto espiritual alcanzó a **{unicas_jesus}** personas únicas que escucharon sobre Jesús. En el aspecto comunitario, los líderes sumaron un total de **{sumas_grupales[0]}** grupitos de fe realizados y se logró arrancar **{sumas_grupales[1]}** grupos nuevos.")
+    st.success(f"📖 **Resumen Explicativo:** Durante el mes de **{mes_sel}**, el equipo sostuvo un total de **{tot_1a1}** conversaciones 1 a 1, **{tot_int}** pláticas intencionales, y **{tot_jesus}** conversaciones sobre Jesús. Este esfuerzo espiritual logró alcanzar a **{unicas_jesus}** personas únicas con el mensaje de Jesús. En el aspecto comunitario, el Staff sumó **{sumas_grupales[0]}** grupitos de fe realizados y se logró arrancar **{sumas_grupales[1]}** grupos nuevos.")
 
-    # --- MÉTRICAS VISUALES ---
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🌟 Con Jesús (Únicas)", unicas_jesus)
-    col2.metric("👥 Grupos Realizados (Total)", sumas_grupales[0])
-    col3.metric("🚀 Grupos Iniciados (Total)", sumas_grupales[1])
+    # --- MÉTRICAS VISUALES (Dos filas) ---
+    st.markdown("#### 🗣️ Esfuerzo de Interacciones")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total 1 a 1", tot_1a1)
+    c2.metric("Total Intencionales", tot_int)
+    c3.metric("Total Con Jesús", tot_jesus)
+    c4.metric("🌟 Únicas Con Jesús", unicas_jesus)
+    
+    st.markdown("#### 👥 Esfuerzo Comunitario")
+    g1, g2, g3 = st.columns([1, 1, 2])
+    g1.metric("Grupos Realizados", sumas_grupales[0])
+    g2.metric("Nuevos Grupos Iniciados", sumas_grupales[1])
 
     # --- TABLA 1: HISTORIAL DETALLADO TRANSPARENTE ---
+    st.markdown("---")
     st.markdown("### 📋 Historial Detallado de Conversaciones")
     query_historial = f"""
         SELECT c.fecha as Fecha, 
                COALESCE(e.nombre, c.nombre_visitante) as Persona, 
                CASE WHEN e.nombre IS NOT NULL THEN 'Oficial' ELSE 'Visitante' END as Estatus,
                c.tipo_conversacion as Interacción, 
-               c.registrado_por as Líder
+               c.registrado_por as Staff
         FROM conversaciones c 
         LEFT JOIN estudiantes e ON c.estudiante_id = e.id
         WHERE strftime('%Y-%m', c.fecha) = '{mes_sel}'
@@ -249,7 +252,6 @@ elif menu == "📊 Resumen Mensual":
     df_historial = pd.read_sql_query(query_historial, conn)
     st.dataframe(df_historial, use_container_width=True, hide_index=True)
 
-    # Botón de Descarga
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
         if not df_historial.empty:
