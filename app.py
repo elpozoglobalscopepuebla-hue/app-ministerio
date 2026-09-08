@@ -32,7 +32,6 @@ def inicializar_bd():
         try: cursor.execute(f"ALTER TABLE conversaciones ADD COLUMN {col} {tipo}")
         except: pass
 
-    # Actualización para la tabla de actividades semanales (Agregar "registrado_por")
     try: cursor.execute("ALTER TABLE actividades_semanales ADD COLUMN registrado_por TEXT")
     except: pass
 
@@ -61,23 +60,22 @@ st.markdown("""
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3256/3256114.png", width=80)
 st.sidebar.title("🌱 Ministerio")
 menu = st.sidebar.radio("Navegación", [
-    "📝 Registrar Interacción", 
+    "📝 Súper Registro (Diario/Semanal)", 
     "📊 Resumen Mensual",
     "👤 Directorio Estudiantes", 
-    "👥 Reporte Semanal",
     "⚙️ Administración Avanzada"
 ])
 
 # =====================================================================
-# 1. REGISTRAR INTERACCIÓN
+# 1. SÚPER FORMULARIO (CONVERSACIONES + REPORTE SEMANAL)
 # =====================================================================
-if menu == "📝 Registrar Interacción":
-    st.title("📝 Registrar Interacciones")
+if menu == "📝 Súper Registro (Diario/Semanal)":
+    st.title("📝 Registro Integral")
     
+    # --- ALERTA DE VISITANTES ---
     if st.session_state['alerta_registro']:
         visitante = st.session_state['alerta_registro']
         st.warning(f"🔔 **¡Atención!** El visitante **{visitante}** ha acumulado un múltiplo de 3 interacciones. ¿Deseas agregarlo oficialmente como estudiante?")
-        
         col_y, col_n = st.columns([1, 4])
         with col_y:
             with st.popover("Sí, registrar ahora"):
@@ -89,8 +87,7 @@ if menu == "📝 Registrar Interacción":
                     c.execute("INSERT INTO estudiantes (nombre, categoria) VALUES (?, ?)", (visitante, cat))
                     nuevo_id = c.lastrowid
                     c.execute("UPDATE conversaciones SET estudiante_id = ?, nombre_visitante = NULL WHERE nombre_visitante = ?", (nuevo_id, visitante))
-                    conn.commit()
-                    conn.close()
+                    conn.commit(); conn.close()
                     st.session_state['alerta_registro'] = None
                     st.success("¡Registrado y vinculado con éxito!")
                     st.rerun()
@@ -103,53 +100,85 @@ if menu == "📝 Registrar Interacción":
     conn = sqlite3.connect('ministerio.db')
     estudiantes_activos = pd.read_sql_query("SELECT id, nombre, categoria FROM estudiantes WHERE estado = 'Activo' ORDER BY nombre", conn)
     visitantes_previos = pd.read_sql_query("SELECT DISTINCT nombre_visitante FROM conversaciones WHERE nombre_visitante IS NOT NULL", conn)
+    
+    # Obtener datos semanales actuales
+    semana_actual, mes_actual = obtener_semana_actual()
+    c = conn.cursor()
+    c.execute("SELECT grupos_realizados, nombres_iglesia, grupos_iniciados, registrado_por FROM actividades_semanales WHERE semana_str = ?", (semana_actual,))
+    datos_sem = c.fetchone()
     conn.close()
 
     nombres_dict = {f"{row['nombre']} ({row['categoria']})": row['id'] for _, row in estudiantes_activos.iterrows()}
     lista_visitantes = visitantes_previos['nombre_visitante'].tolist() if not visitantes_previos.empty else []
 
-    with st.form("form_registro", clear_on_submit=True):
-        st.markdown("Al guardar, las casillas se limpiarán solas para el siguiente registro.")
+    with st.form("form_super_registro", clear_on_submit=True):
+        st.markdown("### 👤 1. Datos del Líder")
         col1, col2 = st.columns(2)
-        with col1:
-            usuario = st.text_input("👤 Tu Nombre (Quien registra)*")
-            fecha_conv = st.date_input("📅 Fecha", date.today())
-            tipo_conv = st.selectbox("💬 Tipo", ["1a1", "Conversaciones con Jesus", "Conversaciones intencionales"])
+        with col1: usuario = st.text_input("Tu Nombre (Quien registra)*", value=datos_sem[3] if datos_sem and datos_sem[3] else "")
+        with col2: fecha_conv = st.date_input("📅 Fecha de interacciones", date.today())
         
-        with col2:
-            st.markdown("**1. Estudiantes Oficiales**")
-            est_seleccionados = st.multiselect("Selecciona uno o varios:", list(nombres_dict.keys()))
+        st.markdown("---")
+        st.markdown("### 💬 2. Registro de Conversaciones")
+        st.write("Selecciona a los estudiantes para cada tipo de conversación. Puedes dejar en blanco las que no apliquen hoy.")
+        
+        c1, c2, c3 = st.columns(3)
+        with c1: est_1a1 = st.multiselect("🗣️ 1 a 1", list(nombres_dict.keys()))
+        with c2: est_jesus = st.multiselect("🌟 Con Jesús", list(nombres_dict.keys()))
+        with c3: est_intencionales = st.multiselect("🎯 Intencionales", list(nombres_dict.keys()))
             
-            st.markdown("**2. Visitantes / No Registrados**")
-            visitante_existente = st.selectbox("Sugerencias de meses pasados (Opcional):", [""] + lista_visitantes)
-            visitante_nuevo = st.text_input("O escribe un nombre nuevo (Opcional):")
+        st.markdown("**Visitantes (No Registrados)**")
+        cv1, cv2, cv3 = st.columns(3)
+        with cv1: visitante_existente = st.selectbox("Historial de visitantes (Opcional):", [""] + lista_visitantes)
+        with cv2: visitante_nuevo = st.text_input("O escribe un nombre nuevo (Opcional):")
+        with cv3: tipo_visitante = st.selectbox("Tipo de charla del visitante", ["1a1", "Conversaciones con Jesus", "Conversaciones intencionales"])
 
-        submit = st.form_submit_button("Guardar Registros", use_container_width=True, type="primary")
+        st.markdown("---")
+        st.markdown("### 📅 3. Reporte de la Semana Pasada")
+        st.info("Si actualizas estos números, se sobrescribirá el reporte de esta semana. Si ya los llenaste antes, déjalos como están.")
+        
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            r = st.number_input("¿Cuantos grupitos basados en la fe tuviste la semana pasada?", min_value=0, value=datos_sem[0] if datos_sem else 0)
+            i = st.number_input("¿Cuantos grupitos basados en la fe se arrancaron la semana pasada?", min_value=0, value=datos_sem[2] if datos_sem else 0)
+        with col_r2:
+            n = st.text_area("¿Quien llevaste a la iglesia la semana pasada? (Escribe nombres)", value=datos_sem[1] if datos_sem else "")
+
+        st.markdown("---")
+        submit = st.form_submit_button("🚀 Guardar Todo el Reporte", use_container_width=True, type="primary")
         
         if submit:
-            visitante_final = visitante_nuevo.strip() if visitante_nuevo.strip() else visitante_existente
-            if not usuario.strip(): st.error("Debes ingresar tu nombre.")
-            elif not est_seleccionados and not visitante_final: st.error("Debes seleccionar un estudiante o visitante.")
+            if not usuario.strip(): 
+                st.error("Debes ingresar tu nombre en la Sección 1.")
             else:
                 conn = sqlite3.connect('ministerio.db')
                 c = conn.cursor()
                 fecha_str = fecha_conv.strftime("%Y-%m-%d")
                 
-                for est in est_seleccionados:
-                    c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", 
-                              (nombres_dict[est], tipo_conv, fecha_str, usuario.strip()))
+                # Guardar Conversaciones
+                for est in est_1a1:
+                    c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "1a1", fecha_str, usuario.strip()))
+                for est in est_jesus:
+                    c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones con Jesus", fecha_str, usuario.strip()))
+                for est in est_intencionales:
+                    c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones intencionales", fecha_str, usuario.strip()))
                 
+                visitante_final = visitante_nuevo.strip() if visitante_nuevo.strip() else visitante_existente
                 if visitante_final:
-                    c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", 
-                              (visitante_final, tipo_conv, fecha_str, usuario.strip()))
+                    c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (visitante_final, tipo_visitante, fecha_str, usuario.strip()))
                     c.execute("SELECT COUNT(*) FROM conversaciones WHERE nombre_visitante = ?", (visitante_final,))
                     conteo = c.fetchone()[0]
                     if conteo > 0 and conteo % 3 == 0:
                         st.session_state['alerta_registro'] = visitante_final
 
+                # Guardar Reporte Semanal
+                if datos_sem: 
+                    c.execute("UPDATE actividades_semanales SET grupos_realizados=?, grupos_iniciados=?, nombres_iglesia=?, registrado_por=? WHERE semana_str=?", (r, i, n, usuario.strip(), semana_actual))
+                else: 
+                    c.execute("INSERT INTO actividades_semanales (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) VALUES (?, ?, ?, ?, ?, ?)", (semana_actual, mes_actual, r, i, n, usuario.strip()))
+                
                 conn.commit()
                 conn.close()
-                st.success('¡Registrado con éxito! Casillas limpiadas.')
+                st.success('✅ ¡Todo guardado con éxito! Las casillas se han limpiado.')
                 if st.session_state['alerta_registro']: st.rerun()
 
 # =====================================================================
@@ -256,37 +285,7 @@ elif menu == "👤 Directorio Estudiantes":
         conn.close()
 
 # =====================================================================
-# 4. REPORTE SEMANAL
-# =====================================================================
-elif menu == "👥 Reporte Semanal":
-    st.title("📅 Reporte de Grupos e Iglesia")
-    semana_actual, mes_actual = obtener_semana_actual()
-    st.write(f"Estás reportando para la **Semana {semana_actual.split('W')[1]}**.")
-    
-    conn = sqlite3.connect('ministerio.db')
-    c = conn.cursor()
-    c.execute("SELECT grupos_realizados, nombres_iglesia, grupos_iniciados, registrado_por FROM actividades_semanales WHERE semana_str = ?", (semana_actual,))
-    datos_sem = c.fetchone()
-    
-    with st.form("form_semanal", clear_on_submit=False):
-        usuario_reporte = st.text_input("👤 Tu Nombre (Quien registra)*", value=datos_sem[3] if datos_sem and datos_sem[3] else "")
-        r = st.number_input("¿Cuántos grupitos de fe tuviste en esta semana?", min_value=0, value=datos_sem[0] if datos_sem else 0)
-        i = st.number_input("¿Cuántos grupitos se arrancaron la semana pasada?", min_value=0, value=datos_sem[2] if datos_sem else 0)
-        n = st.text_area("¿A quién llevaste a la iglesia esta semana?", value=datos_sem[1] if datos_sem else "")
-        
-        if st.form_submit_button("Guardar Reporte Semanal", type="primary"):
-            if not usuario_reporte.strip():
-                st.error("Por favor, ingresa tu nombre.")
-            else:
-                if datos_sem: 
-                    c.execute("UPDATE actividades_semanales SET grupos_realizados=?, grupos_iniciados=?, nombres_iglesia=?, registrado_por=? WHERE semana_str=?", (r, i, n, usuario_reporte.strip(), semana_actual))
-                else: 
-                    c.execute("INSERT INTO actividades_semanales (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) VALUES (?, ?, ?, ?, ?, ?)", (semana_actual, mes_actual, r, i, n, usuario_reporte.strip()))
-                conn.commit(); st.success("Guardado correctamente.")
-    conn.close()
-
-# =====================================================================
-# 5. ADMINISTRACIÓN AVANZADA
+# 4. ADMINISTRACIÓN AVANZADA
 # =====================================================================
 elif menu == "⚙️ Administración Avanzada":
     st.title("⚙️ Base de Datos Maestra")
@@ -342,7 +341,6 @@ elif menu == "⚙️ Administración Avanzada":
                             conteo += 1
                     conn.commit(); st.success(f"✅ Se agregaron {conteo} estudiantes.")
                 
-        # PESTAÑA: BORRAR REGISTROS (SOLO ESTUDIANTES)
         with tab_borrar:
             st.markdown("### 🗑️ Eliminar Estudiantes de la Base de Datos")
             st.error("⚠️ **¡Peligro!** Los datos borrados aquí no se podrán recuperar jamás.")
