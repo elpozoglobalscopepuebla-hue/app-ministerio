@@ -1,45 +1,60 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime, date
+import psycopg2
+from sqlalchemy import create_engine
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Ministerio App", page_icon="🌱", layout="wide")
 
-# --- INICIALIZACIÓN DE BASE DE DATOS ---
+# --- CONEXIÓN A SUPABASE (POSTGRESQL) ---
+try:
+    # Lee el secreto de Streamlit y asegura que empiece con postgresql://
+    DB_URL = st.secrets["conexiones"]["url_base"].replace("postgres://", "postgresql://")
+except:
+    st.error("⚠️ No se encontró el enlace de conexión en los Secrets de Streamlit. Ve a Settings > Secrets y agrega tu url_base.")
+    st.stop()
+
+# Engine para leer tablas fácilmente con Pandas
+engine = create_engine(DB_URL)
+
+def get_connection():
+    return psycopg2.connect(DB_URL)
+
+# --- INICIALIZACIÓN DE BASE DE DATOS EN LA NUBE ---
 def inicializar_bd():
-    conn = sqlite3.connect('ministerio.db')
-    cursor = conn.cursor()
+    conn = get_connection()
+    c = conn.cursor()
     
-    cursor.execute('''CREATE TABLE IF NOT EXISTS estudiantes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT NOT NULL, categoria TEXT NOT NULL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS conversaciones (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, estudiante_id INTEGER, tipo_conversacion TEXT, fecha DATE)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS estudiantes (
+        id SERIAL PRIMARY KEY, 
+        nombre TEXT NOT NULL, 
+        categoria TEXT NOT NULL,
+        estado TEXT DEFAULT 'Activo',
+        telefono TEXT DEFAULT 'Sin dato',
+        escuela TEXT DEFAULT 'Sin dato',
+        edad TEXT DEFAULT 'Sin dato',
+        cumpleanos TEXT DEFAULT 'Sin dato'
+    )''')
     
-    cursor.execute('''CREATE TABLE IF NOT EXISTS reportes_grupales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, semana_str TEXT, mes_pertenencia TEXT, 
-        grupos_realizados INTEGER, grupos_iniciados INTEGER, nombres_iglesia TEXT, registrado_por TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS conversaciones (
+        id SERIAL PRIMARY KEY, 
+        estudiante_id INTEGER, 
+        tipo_conversacion TEXT, 
+        fecha DATE,
+        registrado_por TEXT,
+        nombre_visitante TEXT
+    )''')
     
-    columnas_estudiantes = {
-        "estado": "TEXT DEFAULT 'Activo'", "telefono": "TEXT DEFAULT 'Sin dato'", 
-        "escuela": "TEXT DEFAULT 'Sin dato'", "edad": "TEXT DEFAULT 'Sin dato'", "cumpleanos": "TEXT DEFAULT 'Sin dato'"
-    }
-    for col, tipo in columnas_estudiantes.items():
-        try: cursor.execute(f"ALTER TABLE estudiantes ADD COLUMN {col} {tipo}")
-        except: pass
-
-    columnas_conversaciones = {"registrado_por": "TEXT", "nombre_visitante": "TEXT"}
-    for col, tipo in columnas_conversaciones.items():
-        try: cursor.execute(f"ALTER TABLE conversaciones ADD COLUMN {col} {tipo}")
-        except: pass
-
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='actividades_semanales'")
-    if cursor.fetchone():
-        cursor.execute("SELECT COUNT(*) FROM reportes_grupales")
-        if cursor.fetchone()[0] == 0:
-            try: cursor.execute("INSERT INTO reportes_grupales (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) SELECT semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por FROM actividades_semanales")
-            except: pass
-
+    c.execute('''CREATE TABLE IF NOT EXISTS reportes_grupales (
+        semana_str TEXT PRIMARY KEY, 
+        mes_pertenencia TEXT, 
+        grupos_realizados INTEGER, 
+        grupos_iniciados INTEGER, 
+        nombres_iglesia TEXT, 
+        registrado_por TEXT
+    )''')
+    
     conn.commit()
     conn.close()
 
@@ -86,12 +101,14 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
                 st.write(f"Registrando a: {visitante}")
                 cat = st.selectbox("Categoría*", ["Wanderer", "Sojourner", "Explorer", "Follower", "Guia"])
                 if st.button("Guardar Oficialmente"):
-                    conn = sqlite3.connect('ministerio.db')
+                    conn = get_connection()
                     c = conn.cursor()
-                    c.execute("INSERT INTO estudiantes (nombre, categoria) VALUES (?, ?)", (visitante, cat))
-                    nuevo_id = c.lastrowid
-                    c.execute("UPDATE conversaciones SET estudiante_id = ?, nombre_visitante = NULL WHERE nombre_visitante = ?", (nuevo_id, visitante))
-                    conn.commit(); conn.close()
+                    # En PostgreSQL se usa RETURNING id para obtener el ID recién creado
+                    c.execute("INSERT INTO estudiantes (nombre, categoria) VALUES (%s, %s) RETURNING id", (visitante, cat))
+                    nuevo_id = c.fetchone()[0]
+                    c.execute("UPDATE conversaciones SET estudiante_id = %s, nombre_visitante = NULL WHERE nombre_visitante = %s", (nuevo_id, visitante))
+                    conn.commit()
+                    conn.close()
                     st.session_state['alertas_registro'].pop(0)
                     st.success("¡Registrado con éxito!")
                     st.rerun()
@@ -101,10 +118,14 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
                 st.rerun()
         st.markdown("---")
 
-    conn = sqlite3.connect('ministerio.db')
-    estudiantes_activos = pd.read_sql_query("SELECT id, nombre, categoria FROM estudiantes WHERE estado = 'Activo' ORDER BY nombre", conn)
+    estudiantes_activos = pd.read_sql_query("SELECT id, nombre, categoria FROM estudiantes WHERE estado = 'Activo' ORDER BY nombre", engine)
     nombres_dict = {f"{row['nombre']} ({row['categoria']})": row['id'] for _, row in estudiantes_activos.iterrows()}
+    
     semana_actual, mes_actual = obtener_semana_actual()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT grupos_realizados, nombres_iglesia, grupos_iniciados FROM reportes_grupales WHERE semana_str = %s", (semana_actual,))
+    datos_sem = c.fetchone()
     conn.close()
 
     with st.form("form_super_registro", clear_on_submit=True):
@@ -115,7 +136,7 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
         
         st.markdown("---")
         st.markdown("### 💬 2. Registro de Conversaciones")
-        st.write("Agrega a los estudiantes oficiales en el selector, o escribe a los visitantes en el cuadro de texto separándolos por coma (ej. Carlos, Luis).")
+        st.write("Agrega a los estudiantes oficiales en el selector, o escribe a los visitantes separados por coma.")
         
         c1, c2, c3 = st.columns(3)
         with c1: 
@@ -149,7 +170,7 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
             if not usuario.strip(): 
                 st.error("Debes ingresar tu nombre en la Sección 1.")
             else:
-                conn = sqlite3.connect('ministerio.db')
+                conn = get_connection()
                 c = conn.cursor()
                 fecha_str = fecha_conv.strftime("%Y-%m-%d")
                 staff = usuario.strip()
@@ -158,29 +179,30 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
                     if not texto_visitantes.strip(): return
                     nombres = [nom.strip() for nom in texto_visitantes.split(",") if nom.strip()]
                     for nom in nombres:
-                        c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nom, tipo, fecha_str, staff))
-                        c.execute("SELECT COUNT(*) FROM conversaciones WHERE nombre_visitante = ?", (nom,))
+                        c.execute("INSERT INTO conversaciones (nombre_visitante, tipo_conversacion, fecha, registrado_por) VALUES (%s, %s, %s, %s)", (nom, tipo, fecha_str, staff))
+                        c.execute("SELECT COUNT(*) FROM conversaciones WHERE nombre_visitante = %s", (nom,))
                         if c.fetchone()[0] % 3 == 0:
                             if nom not in st.session_state['alertas_registro']:
                                 st.session_state['alertas_registro'].append(nom)
 
-                for est in est_1a1: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "1a1", fecha_str, staff))
-                for est in est_jesus: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones con Jesus", fecha_str, staff))
-                for est in est_intencionales: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (?, ?, ?, ?)", (nombres_dict[est], "Conversaciones intencionales", fecha_str, staff))
+                for est in est_1a1: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (%s, %s, %s, %s)", (nombres_dict[est], "1a1", fecha_str, staff))
+                for est in est_jesus: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (%s, %s, %s, %s)", (nombres_dict[est], "Conversaciones con Jesus", fecha_str, staff))
+                for est in est_intencionales: c.execute("INSERT INTO conversaciones (estudiante_id, tipo_conversacion, fecha, registrado_por) VALUES (%s, %s, %s, %s)", (nombres_dict[est], "Conversaciones intencionales", fecha_str, staff))
                 
                 guardar_visitantes(vis_1a1, "1a1")
                 guardar_visitantes(vis_jesus, "Conversaciones con Jesus")
                 guardar_visitantes(vis_intencionales, "Conversaciones intencionales")
 
                 if r > 0 or i > 0 or n.strip():
-                    c.execute("""INSERT INTO reportes_grupales 
-                                 (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) 
-                                 VALUES (?, ?, ?, ?, ?, ?)""", 
-                              (semana_actual, mes_actual, r, i, n, staff))
+                    c.execute("SELECT semana_str FROM reportes_grupales WHERE semana_str = %s", (semana_actual,))
+                    if c.fetchone():
+                        c.execute("UPDATE reportes_grupales SET grupos_realizados=%s, grupos_iniciados=%s, nombres_iglesia=%s, registrado_por=%s WHERE semana_str=%s", (r, i, n, staff, semana_actual))
+                    else:
+                        c.execute("INSERT INTO reportes_grupales (semana_str, mes_pertenencia, grupos_realizados, grupos_iniciados, nombres_iglesia, registrado_por) VALUES (%s, %s, %s, %s, %s, %s)", (semana_actual, mes_actual, r, i, n, staff))
                 
                 conn.commit()
                 conn.close()
-                st.success('✅ ¡Registro guardado exitosamente! Las casillas han sido limpiadas.')
+                st.success('✅ ¡Registro guardado exitosamente en la nube! Las casillas han sido limpiadas.')
                 if st.session_state['alertas_registro']: st.rerun()
 
 # =====================================================================
@@ -189,8 +211,9 @@ if menu == "📝 Súper Registro (Diario/Semanal)":
 elif menu == "📊 Resumen Mensual":
     st.title("📊 Resumen Mes a Mes")
     
-    conn = sqlite3.connect('ministerio.db')
-    meses_df = pd.read_sql_query("SELECT DISTINCT strftime('%Y-%m', fecha) as mes FROM conversaciones UNION SELECT mes_pertenencia FROM reportes_grupales", conn)
+    # En PostgreSQL extraemos año y mes con TO_CHAR
+    query_meses = "SELECT DISTINCT TO_CHAR(fecha, 'YYYY-MM') as mes FROM conversaciones UNION SELECT mes_pertenencia as mes FROM reportes_grupales"
+    meses_df = pd.read_sql_query(query_meses, engine)
     historial = [m for m in meses_df['mes'].dropna().tolist()]
     if not historial: historial = [date.today().strftime("%Y-%m")]
     historial.sort(reverse=True)
@@ -200,29 +223,26 @@ elif menu == "📊 Resumen Mensual":
         mes_sel = st.selectbox("📅 Selecciona el mes a analizar:", historial)
     st.divider()
 
+    conn = get_connection()
     c = conn.cursor()
-    # Totales crudos
-    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = '1a1' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
+    
+    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = '1a1' AND TO_CHAR(fecha, 'YYYY-MM') = %s", (mes_sel,))
     tot_1a1 = c.fetchone()[0]
     
-    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones intencionales' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
+    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones intencionales' AND TO_CHAR(fecha, 'YYYY-MM') = %s", (mes_sel,))
     tot_int = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones con Jesus' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
+    c.execute("SELECT COUNT(*) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones con Jesus' AND TO_CHAR(fecha, 'YYYY-MM') = %s", (mes_sel,))
     tot_jesus = c.fetchone()[0]
 
-    # Personas únicas con Jesús
-    c.execute("SELECT COUNT(DISTINCT COALESCE(estudiante_id, nombre_visitante)) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones con Jesus' AND strftime('%Y-%m', fecha) = ?", (mes_sel,))
+    c.execute("SELECT COUNT(DISTINCT COALESCE(estudiante_id::text, nombre_visitante)) FROM conversaciones WHERE tipo_conversacion = 'Conversaciones con Jesus' AND TO_CHAR(fecha, 'YYYY-MM') = %s", (mes_sel,))
     unicas_jesus = c.fetchone()[0]
 
-    # Sumas grupales
-    c.execute("SELECT COALESCE(SUM(grupos_realizados), 0), COALESCE(SUM(grupos_iniciados), 0) FROM reportes_grupales WHERE mes_pertenencia = ?", (mes_sel,))
+    c.execute("SELECT COALESCE(SUM(grupos_realizados), 0), COALESCE(SUM(grupos_iniciados), 0) FROM reportes_grupales WHERE mes_pertenencia = %s", (mes_sel,))
     sumas_grupales = c.fetchone()
 
-    # --- PÁRRAFO EXPLICATIVO ---
     st.success(f"📖 **Resumen Explicativo:** Durante el mes de **{mes_sel}**, el equipo sostuvo un total de **{tot_1a1}** conversaciones 1 a 1, **{tot_int}** pláticas intencionales, y **{tot_jesus}** conversaciones sobre Jesús. Este esfuerzo espiritual logró alcanzar a **{unicas_jesus}** personas únicas con el mensaje de Jesús. En el aspecto comunitario, el Staff sumó **{sumas_grupales[0]}** grupitos de fe realizados y se logró arrancar **{sumas_grupales[1]}** grupos nuevos.")
 
-    # --- MÉTRICAS VISUALES (Dos filas) ---
     st.markdown("#### 🗣️ Esfuerzo de Interacciones")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total 1 a 1", tot_1a1)
@@ -235,21 +255,20 @@ elif menu == "📊 Resumen Mensual":
     g1.metric("Grupos Realizados", sumas_grupales[0])
     g2.metric("Nuevos Grupos Iniciados", sumas_grupales[1])
 
-    # --- TABLA 1: HISTORIAL DETALLADO TRANSPARENTE ---
     st.markdown("---")
     st.markdown("### 📋 Historial Detallado de Conversaciones")
     query_historial = f"""
-        SELECT c.fecha as Fecha, 
-               COALESCE(e.nombre, c.nombre_visitante) as Persona, 
-               CASE WHEN e.nombre IS NOT NULL THEN 'Oficial' ELSE 'Visitante' END as Estatus,
-               c.tipo_conversacion as Interacción, 
-               c.registrado_por as Staff
+        SELECT c.fecha as "Fecha", 
+               COALESCE(e.nombre, c.nombre_visitante) as "Persona", 
+               CASE WHEN e.nombre IS NOT NULL THEN 'Oficial' ELSE 'Visitante' END as "Estatus",
+               c.tipo_conversacion as "Interacción", 
+               c.registrado_por as "Staff"
         FROM conversaciones c 
         LEFT JOIN estudiantes e ON c.estudiante_id = e.id
-        WHERE strftime('%Y-%m', c.fecha) = '{mes_sel}'
+        WHERE TO_CHAR(c.fecha, 'YYYY-MM') = '{mes_sel}'
         ORDER BY c.fecha DESC
     """
-    df_historial = pd.read_sql_query(query_historial, conn)
+    df_historial = pd.read_sql_query(query_historial, engine)
     st.dataframe(df_historial, use_container_width=True, hide_index=True)
 
     with col_btn:
@@ -258,9 +277,8 @@ elif menu == "📊 Resumen Mensual":
             csv = df_historial.to_csv(index=False).encode('utf-8')
             st.download_button(label="⬇️ Descargar Todos los Datos (CSV)", data=csv, file_name=f"reporte_completo_{mes_sel}.csv", mime="text/csv", type="primary")
 
-    # --- IGLESIA ---
     st.markdown("### ⛪ Llevados a la Iglesia este mes")
-    c.execute("SELECT semana_str, nombres_iglesia, registrado_por FROM reportes_grupales WHERE mes_pertenencia = ? AND nombres_iglesia != ''", (mes_sel,))
+    c.execute("SELECT semana_str, nombres_iglesia, registrado_por FROM reportes_grupales WHERE mes_pertenencia = %s AND nombres_iglesia != ''", (mes_sel,))
     iglesia_data = c.fetchall()
     if iglesia_data:
         for sem, nombres, reg_por in iglesia_data: 
@@ -279,9 +297,7 @@ elif menu == "👤 Directorio Estudiantes":
     with tab1:
         filtro_estado = st.radio("Filtrar por estado:", ["Activos", "No participativos", "Graduados"], horizontal=True)
         estado_sql = "Activo" if filtro_estado == "Activos" else "No participativo" if filtro_estado == "No participativos" else "Graduado"
-        conn = sqlite3.connect('ministerio.db')
-        df_consulta = pd.read_sql_query(f"SELECT nombre as 'Nombre', categoria as 'Categoría', telefono as 'Teléfono', escuela as 'Escuela', edad as 'Edad', cumpleanos as 'Cumpleaños' FROM estudiantes WHERE estado = '{estado_sql}' ORDER BY nombre", conn)
-        conn.close()
+        df_consulta = pd.read_sql_query(f"SELECT nombre as \"Nombre\", categoria as \"Categoría\", telefono as \"Teléfono\", escuela as \"Escuela\", edad as \"Edad\", cumpleanos as \"Cumpleaños\" FROM estudiantes WHERE estado = '{estado_sql}' ORDER BY nombre", engine)
         st.dataframe(df_consulta, use_container_width=True, hide_index=True)
 
     with tab2:
@@ -299,15 +315,15 @@ elif menu == "👤 Directorio Estudiantes":
             if st.form_submit_button("Guardar Estudiante", type="primary"):
                 if not nombre.strip(): st.error("El nombre es obligatorio.")
                 else:
-                    conn = sqlite3.connect('ministerio.db')
-                    conn.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) VALUES (?, ?, ?, ?, ?, ?)""", 
+                    conn = get_connection()
+                    c = conn.cursor()
+                    c.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) VALUES (%s, %s, %s, %s, %s, %s)""", 
                               (nombre.strip(), categoria, tel if tel else "Sin dato", escuela if escuela else "Sin dato", edad if edad else "Sin dato", cumple if cumple else "Sin dato"))
                     conn.commit(); conn.close()
                     st.success(f"Estudiante '{nombre}' guardado exitosamente.")
 
     with tab3:
-        conn = sqlite3.connect('ministerio.db')
-        df_activos = pd.read_sql_query("SELECT id, nombre, estado FROM estudiantes WHERE estado IN ('Activo', 'No participativo') ORDER BY nombre", conn)
+        df_activos = pd.read_sql_query("SELECT id, nombre, estado FROM estudiantes WHERE estado IN ('Activo', 'No participativo') ORDER BY nombre", engine)
         if not df_activos.empty:
             for _, row in df_activos.iterrows():
                 col_n, col_btn = st.columns([3, 1])
@@ -315,9 +331,10 @@ elif menu == "👤 Directorio Estudiantes":
                 nuevo_estado = "No participativo" if row['estado'] == "Activo" else "Activo"
                 texto_btn = "Pausar" if row['estado'] == "Activo" else "Reintegrar a Activos"
                 if col_btn.button(texto_btn, key=f"btn_{row['id']}"):
-                    conn.execute("UPDATE estudiantes SET estado = ? WHERE id = ?", (nuevo_estado, row['id']))
-                    conn.commit(); st.rerun()
-        conn.close()
+                    conn = get_connection()
+                    c = conn.cursor()
+                    c.execute("UPDATE estudiantes SET estado = %s WHERE id = %s", (nuevo_estado, row['id']))
+                    conn.commit(); conn.close(); st.rerun()
 
 # =====================================================================
 # 4. ADMINISTRACIÓN AVANZADA
@@ -327,40 +344,42 @@ elif menu == "⚙️ Administración Avanzada":
     pwd = st.text_input("Ingresa la contraseña de administrador:", type="password")
     
     if pwd == "elpozoregistradatos":
-        conn = sqlite3.connect('ministerio.db')
         tab_activos, tab_graduados, tab_importar, tab_borrar = st.tabs([
             "Estudiantes Activos/Inactivos", "🎓 Graduados", "📥 Importación", "🗑️ Eliminar Registros"
         ])
         
         with tab_activos:
-            df_main = pd.read_sql_query("SELECT * FROM estudiantes WHERE estado != 'Graduado'", conn)
+            df_main = pd.read_sql_query("SELECT * FROM estudiantes WHERE estado != 'Graduado' ORDER BY id ASC", engine)
             edited_main = st.data_editor(df_main, key="editor_main", use_container_width=True, hide_index=True,
                                          column_config={"id": st.column_config.NumberColumn(disabled=True),
                                                         "estado": st.column_config.SelectboxColumn(options=["Activo", "No participativo", "Graduado"])})
             if st.button("💾 Guardar Cambios Generales"):
+                conn = get_connection()
                 c = conn.cursor()
                 for _, row in edited_main.iterrows():
-                    c.execute("""UPDATE estudiantes SET nombre=?, categoria=?, estado=?, telefono=?, escuela=?, edad=?, cumpleanos=? WHERE id=?""",
+                    c.execute("""UPDATE estudiantes SET nombre=%s, categoria=%s, estado=%s, telefono=%s, escuela=%s, edad=%s, cumpleanos=%s WHERE id=%s""",
                               (row['nombre'], row['categoria'], row['estado'], row['telefono'], row['escuela'], row['edad'], row['cumpleanos'], row['id']))
-                conn.commit(); st.success("Cambios guardados."); st.rerun()
+                conn.commit(); conn.close(); st.success("Cambios guardados."); st.rerun()
 
         with tab_graduados:
-            df_grad = pd.read_sql_query("SELECT * FROM estudiantes WHERE estado = 'Graduado'", conn)
+            df_grad = pd.read_sql_query("SELECT * FROM estudiantes WHERE estado = 'Graduado' ORDER BY id ASC", engine)
             if not df_grad.empty:
                 edited_grad = st.data_editor(df_grad, key="editor_grad", use_container_width=True, hide_index=True,
                                              column_config={"id": st.column_config.NumberColumn(disabled=True),
                                                             "estado": st.column_config.SelectboxColumn(options=["Graduado", "Activo"])})
                 if st.button("💾 Guardar Cambios Graduados"):
+                    conn = get_connection()
                     c = conn.cursor()
                     for _, row in edited_grad.iterrows():
-                        c.execute("""UPDATE estudiantes SET nombre=?, categoria=?, estado=?, telefono=?, escuela=?, edad=?, cumpleanos=? WHERE id=?""",
+                        c.execute("""UPDATE estudiantes SET nombre=%s, categoria=%s, estado=%s, telefono=%s, escuela=%s, edad=%s, cumpleanos=%s WHERE id=%s""",
                                   (row['nombre'], row['categoria'], row['estado'], row['telefono'], row['escuela'], row['edad'], row['cumpleanos'], row['id']))
-                    conn.commit(); st.success("Cambios guardados."); st.rerun()
+                    conn.commit(); conn.close(); st.success("Cambios guardados."); st.rerun()
 
         with tab_importar:
             datos_pegados = st.text_area("Pega los datos de Excel aquí (Orden: Nombre | Categoría | Teléfono | Escuela | Edad | Cumpleaños):")
             if st.button("🚀 Importar Datos"):
                 if datos_pegados.strip():
+                    conn = get_connection()
                     c = conn.cursor()
                     conteo = 0
                     for linea in datos_pegados.strip().split('\n'):
@@ -368,26 +387,26 @@ elif menu == "⚙️ Administración Avanzada":
                         cols = linea.split('\t')
                         while len(cols) < 6: cols.append("Sin dato")
                         if cols[0].strip():
-                            c.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) VALUES (?, ?, ?, ?, ?, ?)""", 
+                            c.execute("""INSERT INTO estudiantes (nombre, categoria, telefono, escuela, edad, cumpleanos) VALUES (%s, %s, %s, %s, %s, %s)""", 
                                       (cols[0].strip(), cols[1].strip() or "Wanderer", cols[2].strip() or "Sin dato", cols[3].strip() or "Sin dato", cols[4].strip() or "Sin dato", cols[5].strip() or "Sin dato"))
                             conteo += 1
-                    conn.commit(); st.success(f"✅ Se agregaron {conteo} estudiantes.")
+                    conn.commit(); conn.close(); st.success(f"✅ Se agregaron {conteo} estudiantes.")
                 
         with tab_borrar:
-            df_est_del = pd.read_sql_query("SELECT id, nombre, estado FROM estudiantes", conn)
+            df_est_del = pd.read_sql_query("SELECT id, nombre, estado FROM estudiantes", engine)
             dict_est_del = {f"{row['nombre']} ({row['estado']})": row['id'] for _, row in df_est_del.iterrows()}
             est_a_borrar = st.multiselect("Selecciona los estudiantes a eliminar:", list(dict_est_del.keys()))
             if est_a_borrar:
                 with st.popover("⚠️ Borrar Estudiantes Seleccionados"):
                     st.warning("Estás a punto de borrar los estudiantes y su historial de forma irreversible.")
                     if st.button("Confirmar Eliminación Definitiva", type="primary"):
+                        conn = get_connection()
                         c = conn.cursor()
                         for est in est_a_borrar:
                             id_del = dict_est_del[est]
-                            c.execute("DELETE FROM conversaciones WHERE estudiante_id = ?", (id_del,))
-                            c.execute("DELETE FROM estudiantes WHERE id = ?", (id_del,))
-                        conn.commit(); st.success("Estudiantes eliminados."); st.rerun()
-                        
-        conn.close()
+                            c.execute("DELETE FROM conversaciones WHERE estudiante_id = %s", (id_del,))
+                            c.execute("DELETE FROM estudiantes WHERE id = %s", (id_del,))
+                        conn.commit(); conn.close(); st.success("Estudiantes eliminados."); st.rerun()
+
     elif pwd != "":
         st.error("Contraseña incorrecta.")
